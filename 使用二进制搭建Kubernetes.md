@@ -243,6 +243,7 @@ sudo chmod +x /usr/local/bin/cfssl /usr/local/bin/cfssljson /usr/local/bin/cfssl
 #### 2.2.1 创建证书配置
 
 ```bash
+cd  /etc/kubernetes/ssl
 nano ca-config.json
 {
     "signing": {
@@ -275,6 +276,7 @@ nano ca-config.json
 ####  2.2.2 创建CA证书请求
 
 ```bash
+cd  /etc/kubernetes/ssl
 nano ca-csr.json
 {
     "CN": "kubernetes",
@@ -307,6 +309,9 @@ nano ca-csr.json
 #### 2.2.3 生成证书文件并分发
 
 ```bash
+#生成证书
+cfssl gencert -initca ca-csr.json | cfssljson -bare ca
+#分发证书
 NODE_IPS=("10.0.0.31" "10.0.0.32" "10.0.0.33")
 for node_ip in ${NODE_IPS[@]};do
     echo ">>> ${node_ip}"
@@ -345,7 +350,7 @@ sudo chmod +x /usr/local/bin/etcdctl
 #### 3.2.1 创建证书签名请求 
 
 ```bash
-mkdir -p/etc/kubernetes/ssl/etcd
+mkdir -p /etc/kubernetes/ssl/etcd
 cd /etc/kubernetes/ssl/etcd
 cat >etcd-csr.json << EOF
 {
@@ -418,6 +423,7 @@ Wants=network-online.target
 Documentation=https://github.com/coreos
 [Service]
 User=root
+Type=notify
 PermissionsStartOnly=true
 WorkingDirectory=/var/lib/etcd/
 ExecStart=/usr/local/bin/etcd \
@@ -503,7 +509,33 @@ done
 
 
 
+## 4. 部署master节点
 
+① kubernetes master 节点运行如下组件：
+
+- kube-apiserver
+- kube-scheduler
+- kube-controller-manager
+
+② kube-scheduler 和 kube-controller-manager 可以以集群模式运行，通过 leader 选举产生一个工作进程，其它进程处于阻塞模式。
+
+③ 对于 kube-apiserver，可以运行多个实例（本文档是 3 实例），但对其它组件需要提供统一的访问地址，该地址需要高可用。本文档使用 keepalived 和 haproxy 实现 kube-apiserver VIP 高可用和负载均衡。
+
+④ 因为对master做了keepalived高可用，所以3台服务器都有可能会升成master服务器（主master宕机，会有从升级为主）；因此所有的master操作，在3个服务器上都要进行。
+
+### 4.1 更新微软kubernetes镜像源
+
+
+
+```
+VER=v1.16.2
+wget https://dl.k8s.io/$VER/kubernetes-server-linux-amd64.tar.gz
+
+```
+
+
+
+### 4.2 部署高可用组件
 
 
 
