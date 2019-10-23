@@ -4,9 +4,9 @@
 
 ### 0.1 组件版本
 
-- Kubernetes 待定
+- Kubernetes v1.16.2
 - Docker 待定
-- Etcd 待定
+- Etcd v3.3.10
 - Flanneld 待定
 - 插件：
   - CoreDNS
@@ -331,12 +331,12 @@ done
 ### 3.1 下载etcd二进制文件
 
 ``` bash
-sudo wget http://mirror.kaiyuanshe.cn/kubernetes/etcd/etcd-v3.3.10-linux-arm64.tar.gz
-tar -zxvf etcd-v3.3.10-linux-arm64.tar.gz
-cd etcd-v3.3.10-linux-arm64
+sudo wget http://mirror.kaiyuanshe.cn/kubernetes/etcd/etcd-v3.3.10-linux-amd64.tar.gz
+tar -zxvf etcd-v3.3.10-linux-amd64.tar.gz
+cd etcd-v3.3.10-linux-amd64
 sudo mv etcd /usr/local/bin/etcd
 sudo mv etcdctl /usr/local/bin/etcdctl
-sudo chmod +x/usr/local/bin/etcd
+sudo chmod +x /usr/local/bin/etcd
 sudo chmod +x /usr/local/bin/etcdctl
 ```
 
@@ -402,15 +402,104 @@ done
 
 
 
+### 3.3 创建etcd systemd unit模板及配置文件
+
+#### 3.3.1 创建etcd systemd unit 模板
+
+创建systemd unit模板，以便分发时修改对应参数
+
+```bash
+cat > etcd.service.template <<EOF
+[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+Documentation=https://github.com/coreos
+[Service]
+User=root
+PermissionsStartOnly=true
+WorkingDirectory=/var/lib/etcd/
+ExecStart=/usr/local/bin/etcd \
+    --data-dir=/var/lib/etcd/ \
+    --name ##NODE_NAME## \
+    --cert-file=/etc/kubernetes/ssl/etcd/etcd.pem \
+    --key-file=/etc/kubernetes/ssl/etcd/etcd-key.pem \
+    --trusted-ca-file=/etc/kubernetes/ssl/ca.pem \
+    --peer-cert-file=/etc/kubernetes/ssl/etcd/etcd.pem \
+    --peer-key-file=/etc/kubernetes/ssl/etcd/etcd-key.pem \
+    --peer-trusted-ca-file=/etc/kubernetes/ssl/ca.pem \
+    --peer-client-cert-auth \
+    --client-cert-auth \
+    --listen-peer-urls=https://##NODE_IP##:2380 \
+    --initial-advertise-peer-urls=https://##NODE_IP##:2380 \
+    --listen-client-urls=https://##NODE_IP##:2379,http://127.0.0.1:2379\
+    --advertise-client-urls=https://##NODE_IP##:2379 \
+    --initial-cluster-token=etcd-cluster-0 \
+    --initial-cluster=etcd0=https://10.0.0.31:2380,etcd1=https://10.0.0.32:2380,etcd2=https://10.0.0.33:2380 \
+    --initial-cluster-state=new
+Restart=on-failure
+RestartSec=15s
+TimeoutStartSec=30s
+[Install]
+WantedBy=multi-user.target
+EOF
+```
 
 
 
+- WorkingDirectory 、 --data-dir ：指定工作目录和数据目录为/var/lib/etcd ，需在启动服务前创建这个目录；
+- --name ：指定节点名称，当 --initial-cluster-state 值为 new 时， --name 的参数值必须位于 --initial-cluster 列表中；
+- --cert-file 、 --key-file ：etcd server 与 client 通信时使用的证书和私钥；
+- --trusted-ca-file ：签名 client 证书的 CA 证书，用于验证 client 证书；
+- --peer-cert-file 、 --peer-key-file ：etcd 与 peer 通信使用的证书和私钥；
+- --peer-trusted-ca-file ：签名 peer 证书的 CA 证书，用于验证 peer 证书；
 
 
 
+#### 3.3.2 为etcd节点创建和分发systemd unit文件
 
+```bash
+NODE_NAMES=("etcd0" "etcd1" "etcd2")
+NODE_IPS=("10.0.0.31" "10.0.0.32" "10.0.0.33")
+#替换模板文件中的变量，为各节点创建 systemd unit 文件
+for (( i=0; i < 3; i++ ));do
+        sed -e "s/##NODE_NAME##/${NODE_NAMES[i]}/g" -e "s/##NODE_IP##/${NODE_IPS[i]}/g" etcd.service.template > etcd-${NODE_IPS[i]}.service
+done
+#分发生成的 systemd unit 和etcd的配置文件：
+for node_ip in ${NODE_IPS[@]};do
+        echo ">>> ${node_ip}"
+        ssh phadmin@${node_ip} "sudo mkdir -p /var/lib/etcd && sudo chown -R phadmin /var/lib/etcd"
+        scp etcd-${node_ip}.service phadmin@${node_ip}:/tmp/etcd.service
+        ssh phadmin@${node_ip} "sudo mv /tmp/etcd.service /etc/systemd/system/etcd.service "
+done
 
+```
 
+### 3.3.3 启动并验证etcd服务
+
+```bash
+NODE_IPS=("10.0.0.31" "10.0.0.32" "10.0.0.33")
+#启动 etcd 服务
+for node_ip in ${NODE_IPS[@]};do
+        echo ">>> ${node_ip}"
+        ssh phadmin@${node_ip} "sudo systemctl daemon-reload && sudo systemctl enable etcd && sudo systemctl start etcd"
+done
+#检查启动结果,确保状态为 active (running)
+for node_ip in ${NODE_IPS[@]};do
+        echo ">>> ${node_ip}"
+        ssh phadmin@${node_ip} "sudo systemctl status etcd|grep Active"
+done
+#验证服务状态,输出均为healthy 时表示集群服务正常
+for node_ip in ${NODE_IPS[@]};do
+        echo ">>> ${node_ip}"
+        ETCDCTL_API=3 /usr/local/bin/etcdctl \
+--endpoints=https://${node_ip}:2379 \
+--cacert=/etc/kubernetes/ssl/ca.pem \
+--cert=/etc/kubernetes/ssl/etcd/etcd.pem \
+--key=/etc/kubernetes/ssl/etcd/etcd-key.pem endpoint health
+done 
+```
 
 
 
